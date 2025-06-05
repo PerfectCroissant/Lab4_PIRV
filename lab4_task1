@@ -1,0 +1,87 @@
+#include <iostream>
+#include <cstdlib>
+#include <cuda_runtime.h>
+#include <ctime>
+
+const int M = 512;
+const int N = 512;
+const int P = 512;
+
+void matrixMultiplyCPU(float* A, float* B, float* C, int M, int N, int P) {
+    for (int i = 0; i < M; ++i)
+        for (int j = 0; j < P; ++j) {
+            float sum = 0;
+            for (int k = 0; k < N; ++k)
+                sum = sum + A[i * N + k] * B[k * P + j];
+            C[i * P + j] = sum;
+        }
+}
+
+__global__ void matrixMultiplyCUDA(float* A, float* B, float* C, int M, int N, int P) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < M && col < P) {
+        float sum = 0;
+        for (int k = 0; k < N; ++k)
+            sum += A[row * N + k] * B[k * P + col];
+        C[row * P + col] = sum;
+    }
+}
+
+
+
+int main() {
+    size_t sizeA = M * N * sizeof(float);
+    size_t sizeB = N * P * sizeof(float);
+    size_t sizeC = M * P * sizeof(float);
+    float *A = (float*)malloc(sizeA);
+    float *B = (float*)malloc(sizeB);
+    float *C_cpu = (float*)malloc(sizeC);
+    float *C_gpu = (float*)malloc(sizeC);
+
+    for (int i = 0; i < M * N; ++i) A[i] = static_cast<float>(rand()) / RAND_MAX;
+    for (int i = 0; i < N * P; ++i) B[i] = static_cast<float>(rand()) / RAND_MAX;
+
+    clock_t start = clock();
+    matrixMultiplyCPU(A, B, C_cpu, M, N, P);
+    clock_t end = clock();
+    std::cout << "Время CPU: " << (double)(end - start) / CLOCKS_PER_SEC << "с \n";
+
+    float *d_A, *d_B, *d_C;
+    cudaMalloc((void**)&d_A, sizeA);
+    cudaMalloc((void**)&d_B, sizeB);
+    cudaMalloc((void**)&d_C, sizeC);
+    cudaMemcpy(d_A, A, sizeA, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, B, sizeB, cudaMemcpyHostToDevice);
+
+    dim3 blockSize(16, 16);
+    dim3 gridSize((P + 15) / 16, (M + 15) / 16);
+
+    cudaEvent_t startGPU, stopGPU;
+    cudaEventCreate(&startGPU);
+    cudaEventCreate(&stopGPU);
+    cudaEventRecord(startGPU);
+
+    matrixMultiplyCUDA<<<gridSize, blockSize>>>(d_A, d_B, d_C, M, N, P);
+
+    cudaEventRecord(stopGPU);
+    cudaEventSynchronize(stopGPU);
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, startGPU, stopGPU);
+    std::cout << "Время GPU: " << milliseconds / 1000.0f << "с \n";
+
+    cudaMemcpy(C_gpu, d_C, sizeC, cudaMemcpyDeviceToHost);
+
+    bool correct = true;
+    for (int i = 0; i < M * P; ++i)
+        if (fabs(C_cpu[i] - C_gpu[i]) > 1e-4) {
+            correct = false;
+            break;
+        }
+
+    std::cout << (correct ? "Результаты совпадают.\n" : "Результаты не совпадают\n");
+
+    cudaFree(d_A); cudaFree(d_B); cudaFree(d_C);
+    free(A); free(B); free(C_cpu); free(C_gpu);
+    return 0;
+}
