@@ -1,0 +1,94 @@
+#include <iostream>
+#include <cstdlib>
+#include <ctime>
+#include <cmath>
+#include <cuda_runtime.h>
+
+#define WIDTH 1024
+#define HEIGHT 1024
+
+void blurFilterCPU(unsigned char* input, unsigned char* output, int width, int height) {
+    for (int y = 1; y < height - 1; ++y) {
+        for (int x = 1; x < width - 1; ++x) {
+            int sum = 0;
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx)
+                    sum += input[(y + dy) * width + (x + dx)];
+            output[y * width + x] = static_cast<unsigned char>(sum / 9);
+        }
+    }
+}
+
+__global__ void blurFilterCUDA(unsigned char* input, unsigned char* output, int width, int height) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= 1 && x < width - 1 && y >= 1 && y < height - 1) {
+        int sum = 0;
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx)
+                sum += input[(y + dy) * width + (x + dx)];
+        output[y * width + x] = static_cast<unsigned char>(sum / 9);
+    }
+}
+
+
+
+int main() {
+    size_t imageSize = WIDTH * HEIGHT * sizeof(unsigned char);
+
+    unsigned char* input = (unsigned char*)malloc(imageSize);
+    unsigned char* outputCPU = (unsigned char*)malloc(imageSize);
+    unsigned char* outputGPU = (unsigned char*)malloc(imageSize);
+
+    srand(time(0));
+    for (int i = 0; i < WIDTH * HEIGHT; ++i)
+        input[i] = rand() % 256;
+
+    clock_t start = clock();
+    blurFilterCPU(input, outputCPU, WIDTH, HEIGHT);
+    clock_t end = clock();
+    std::cout << "Время CPU: " << (double)(end - start) / CLOCKS_PER_SEC << "с \n";
+
+    unsigned char *d_input, *d_output;
+    cudaMalloc((void**)&d_input, imageSize);
+    cudaMalloc((void**)&d_output, imageSize);
+
+    cudaMemcpy(d_input, input, imageSize, cudaMemcpyHostToDevice);
+
+    dim3 blockSize(16, 16);
+    dim3 gridSize((WIDTH + 15) / 16, (HEIGHT + 15) / 16);
+
+    cudaEvent_t startGPU, stopGPU;
+    cudaEventCreate(&startGPU);
+    cudaEventCreate(&stopGPU);
+    cudaEventRecord(startGPU);
+
+    blurFilterCUDA<<<gridSize, blockSize>>>(d_input, d_output, WIDTH, HEIGHT);
+
+    cudaEventRecord(stopGPU);
+    cudaEventSynchronize(stopGPU);
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, startGPU, stopGPU);
+    std::cout << "Время GPU: " << milliseconds / 1000.0f << "с \n";
+
+    cudaMemcpy(outputGPU, d_output, imageSize, cudaMemcpyDeviceToHost);
+
+    bool correct = true;
+    for (int y = 1; y < HEIGHT - 1 && correct; ++y) {
+        for (int x = 1; x < WIDTH - 1; ++x) {
+            int idx = y * WIDTH + x;
+            if (abs(outputCPU[idx] - outputGPU[idx]) > 1) {
+                correct = false;
+                std::cout << "Mismatch at (" << x << "," << y << "): CPU=" 
+                          << (int)outputCPU[idx] << " GPU=" << (int)outputGPU[idx] << "\n";
+                break;
+            }
+        }
+    }
+    std::cout << (correct ? "Результаты совпадают \n" : "Результаты не совпадают \n");
+
+    free(input); free(outputCPU); free(outputGPU);
+    cudaFree(d_input); cudaFree(d_output);
+    return 0;
+}
